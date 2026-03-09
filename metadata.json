@@ -1,0 +1,5 @@
+{
+  "name": "Gestor de Carga de Pallets",
+  "description": "Aplicación para gestionar la carga de pallets en contenedores, permitiendo importar datos desde Excel y buscar pallets específicos.",
+  "requestFramePermissions": []
+}
