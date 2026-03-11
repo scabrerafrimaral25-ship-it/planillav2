@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { Upload, FileJson, Search, Plus, Trash2, Printer, Download, Save, Home, AlertCircle, FileText, FileSpreadsheet } from 'lucide-react';
@@ -21,6 +21,9 @@ type Session = {
   sessionName: string;
   masterData: Pallet[];
   searchIds: string[];
+  originalData: any[][];
+  colLote: number;
+  colContenedor: number;
 };
 
 function parseNumber(val: any): number {
@@ -50,7 +53,10 @@ export default function App() {
     savedAt: new Date().toISOString(),
     sessionName: 'Nueva Sesión',
     masterData: [],
-    searchIds: []
+    searchIds: [],
+    originalData: [],
+    colLote: -1,
+    colContenedor: -1
   });
   const [toast, setToast] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -167,7 +173,14 @@ export default function App() {
           return;
         }
         
-        setSession(prev => ({ ...prev, masterData: pallets, searchIds: [] }));
+        setSession(prev => ({ 
+          ...prev, 
+          masterData: pallets, 
+          searchIds: [],
+          originalData: json,
+          colLote: colLote,
+          colContenedor: colContenedor
+        }));
         setScreen('workspace');
         showToast(`Cargados ${pallets.length} pallets exitosamente`);
       } catch (err: any) {
@@ -299,60 +312,117 @@ export default function App() {
         .map(p => p.containerId)
     ));
 
-    const exportData: any[] = [];
+    const wsData: any[][] = [];
     
+    // Header rows
+    wsData.push([]); // Row 1: Empty
+    wsData.push(['PLANILLA DE CARGA', '', '', '', '', '', '']); // Row 2
+    wsData.push(['Contenedor', 'Cant.', 'Bultos', 'Peso', 'Descripción', '', 'Pallet ID']); // Row 3
+    
+    // Data rows
     containersWithSearched.forEach(containerId => {
       const containerPallets = session.masterData.filter(p => p.containerId === containerId);
       
-      exportData.push({ Contenedor: containerId, Lote: '', Descripción: '', Bultos: '', Cantidad: '', Kilos: '', Estado: '' });
-      
-      let totBultos = 0, totCant = 0, totKilos = 0;
-      
       containerPallets.forEach(p => {
-        const isSearched = session.searchIds.includes(p.palletId);
-        exportData.push({
-          Contenedor: '',
-          Lote: p.palletId,
-          Descripción: p.description,
-          Bultos: p.boxes,
-          Cantidad: p.quantity,
-          Kilos: p.weight,
-          Estado: isSearched ? 'ENCONTRADO' : ''
-        });
-        totBultos += p.boxes;
-        totCant += p.quantity;
-        totKilos += p.weight;
+        wsData.push([
+          p.containerId,
+          p.quantity,
+          p.boxes,
+          p.weight,
+          p.description,
+          '', // Empty column F
+          p.palletId
+        ]);
       });
       
-      exportData.push({
-        Contenedor: 'TOTAL CONTENEDOR',
-        Lote: '',
-        Descripción: '',
-        Bultos: totBultos,
-        Cantidad: totCant,
-        Kilos: totKilos,
-        Estado: ''
-      });
-      exportData.push({}); // Empty row
+      wsData.push([]); // Empty row between containers
     });
 
-    // Summary
-    const searchedPallets = session.masterData.filter(p => session.searchIds.includes(p.palletId));
-    const totalBultos = searchedPallets.reduce((sum, p) => sum + p.boxes, 0);
-    const totalKilos = searchedPallets.reduce((sum, p) => sum + p.weight, 0);
-    const cotes = Array.from(new Set(
-      searchedPallets
-        .map(p => p.description.match(/COTE P\d+/i)?.[0])
-        .filter(Boolean)
-    ));
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    
+    // Apply styles
+    // Merge A2:G2
+    ws['!merges'] = [
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }
+    ];
+    
+    // Column widths
+    ws['!cols'] = [
+      { wch: 18 }, // Contenedor
+      { wch: 6 },  // Cant
+      { wch: 8 },  // Bultos
+      { wch: 8 },  // Peso
+      { wch: 60 }, // Descripción
+      { wch: 4 },  // Empty
+      { wch: 12 }, // Pallet ID
+    ];
 
-    exportData.push({ Contenedor: 'RESUMEN DE CARGA', Lote: '', Descripción: '', Bultos: '', Cantidad: '', Kilos: '', Estado: '' });
-    exportData.push({ Contenedor: 'Total Pallets', Lote: searchedPallets.length, Descripción: '', Bultos: '', Cantidad: '', Kilos: '', Estado: '' });
-    exportData.push({ Contenedor: 'Total Bultos', Lote: totalBultos, Descripción: '', Bultos: '', Cantidad: '', Kilos: '', Estado: '' });
-    exportData.push({ Contenedor: 'Total Kilos', Lote: totalKilos, Descripción: '', Bultos: '', Cantidad: '', Kilos: '', Estado: '' });
-    exportData.push({ Contenedor: 'Cotes', Lote: cotes.join(', '), Descripción: '', Bultos: '', Cantidad: '', Kilos: '', Estado: '' });
+    // Style Header Row 2
+    if (ws['A2']) {
+      ws['A2'].s = {
+        font: { bold: true, sz: 14 },
+        alignment: { horizontal: 'center', vertical: 'center' }
+      };
+    }
+    
+    // Style Header Row 3
+    const headers = ['A3', 'B3', 'C3', 'D3', 'E3', 'F3', 'G3'];
+    headers.forEach(ref => {
+      if (ws[ref]) {
+        ws[ref].s = {
+          font: { bold: true },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: {
+            top: { style: 'thin' },
+            bottom: { style: 'thin' },
+            left: { style: 'thin' },
+            right: { style: 'thin' }
+          }
+        };
+      }
+    });
 
-    const ws = XLSX.utils.json_to_sheet(exportData);
+    // Style Data Rows
+    const normalize = (id: string) => id.replace(/^0+/, '').trim();
+    const searchIdsNorm = session.searchIds.map(normalize);
+
+    for (let R = 3; R < wsData.length; R++) {
+      const row = wsData[R];
+      if (!row || row.length === 0) continue; // Empty row
+      
+      const palletId = String(row[6] || '').trim();
+      if (!palletId) continue;
+      
+      const normPalletId = normalize(palletId);
+      const isSearched = searchIdsNorm.includes(normPalletId);
+      
+      // Apply borders to all cells in the row
+      for (let C = 0; C <= 6; C++) {
+        const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
+        if (!ws[cellRef]) {
+          ws[cellRef] = { t: 's', v: '' }; // Create empty cell if missing
+        }
+        
+        ws[cellRef].s = {
+          border: {
+            top: { style: 'thin' },
+            bottom: { style: 'thin' },
+            left: { style: 'thin' },
+            right: { style: 'thin' }
+          }
+        };
+        
+        // Highlight Pallet ID cell if searched
+        if (C === 6 && isSearched) {
+          ws[cellRef].s.fill = {
+            patternType: 'solid',
+            fgColor: { rgb: 'FFFFFF00' } // Yellow
+          };
+          ws[cellRef].s.font = { bold: true };
+        }
+      }
+    }
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Plan de Carga");
     XLSX.writeFile(wb, `${session.sessionName || 'plan_carga'}.xlsx`);
