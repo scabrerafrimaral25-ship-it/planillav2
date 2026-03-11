@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { Upload, FileJson, Search, Plus, Trash2, Printer, Download, Save, Home, AlertCircle, FileText, FileSpreadsheet } from 'lucide-react';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 type Pallet = {
   containerId: string;
@@ -94,7 +95,8 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        if (!e.target?.result) throw new Error("No se pudo leer el archivo");
+        const data = new Uint8Array(e.target.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
@@ -112,22 +114,27 @@ export default function App() {
           const row = json[i] as any[];
           if (!row) continue;
           const rowStr = row.map(c => String(c || '').toLowerCase());
-          const hasContenedor = rowStr.some(c => c.includes('contenedor'));
-          const hasLote = rowStr.some(c => c.includes('lote'));
-          if (hasContenedor && hasLote) {
+          
+          const hasContenedor = rowStr.some(c => c.includes('contenedor') || c.includes('cntr') || c.includes('equipo'));
+          const hasLote = rowStr.some(c => c.includes('lote') || c.includes('pallet') || c.includes('id'));
+          
+          if (hasContenedor || hasLote) {
             headerRowIdx = i;
-            colContenedor = rowStr.findIndex(c => c.includes('contenedor'));
-            colLote = rowStr.findIndex(c => c.includes('lote'));
             
-            const findCol = (keywords: string[], fallback: number) => {
-              const idx = rowStr.findIndex(c => keywords.some(k => c.includes(k)));
+            const findCol = (primaryKeywords: string[], secondaryKeywords: string[], fallback: number) => {
+              let idx = rowStr.findIndex(c => primaryKeywords.some(k => c.includes(k)));
+              if (idx === -1 && secondaryKeywords.length > 0) {
+                idx = rowStr.findIndex(c => secondaryKeywords.some(k => c.includes(k)));
+              }
               return idx !== -1 ? idx : fallback;
             };
             
-            colCantidad = findCol(['cantidad'], 3);
-            colCajas = findCol(['cajas', 'bultos'], 4);
-            colKilos = findCol(['kilos', 'peso'], 5);
-            colDesc = findCol(['descripci'], 6);
+            colContenedor = findCol(['contenedor', 'cntr', 'equipo'], [], 2);
+            colLote = findCol(['lote', 'pallet', 'sscc'], ['código', 'codigo', 'id'], 7);
+            colCantidad = findCol(['cantidad', 'cant'], [], 3);
+            colCajas = findCol(['cajas', 'bultos', 'bx'], [], 4);
+            colKilos = findCol(['kilos', 'peso', 'kg', 'neto'], [], 5);
+            colDesc = findCol(['descripci', 'producto', 'item'], [], 6);
             break;
           }
         }
@@ -143,6 +150,7 @@ export default function App() {
           const palletId = String(row[colLote] || '').trim();
           
           if (!containerId && !palletId) continue;
+          if (containerId.toLowerCase().includes('total') || palletId.toLowerCase().includes('total')) continue;
           
           pallets.push({
             containerId,
@@ -154,13 +162,20 @@ export default function App() {
           });
         }
         
+        if (pallets.length === 0) {
+          showAlert('No se encontraron datos válidos. Verifica que el Excel tenga columnas como "Contenedor" y "Lote".');
+          return;
+        }
+        
         setSession(prev => ({ ...prev, masterData: pallets, searchIds: [] }));
         setScreen('workspace');
         showToast(`Cargados ${pallets.length} pallets exitosamente`);
-      } catch (err) {
-        showAlert('Error al procesar el archivo Excel. Asegúrate de que el formato sea correcto.');
+      } catch (err: any) {
+        console.error("Error procesando Excel:", err);
+        showAlert(`Error al procesar el archivo: ${err.message || 'Formato irreconocible'}`);
       }
     };
+    reader.onerror = () => showAlert('Error de lectura del archivo en el navegador.');
     reader.readAsArrayBuffer(file);
   };
 
@@ -203,14 +218,30 @@ export default function App() {
     if (!searchInput.trim()) return;
     const newIds = searchInput.split(/[\s,\n]+/).filter(id => id.trim() !== '');
     
-    // Check for non-existent IDs
-    const notFound = newIds.filter(id => !session.masterData.some(p => p.palletId === id));
+    // Check for non-existent IDs (ignoring leading zeros for comparison)
+    const normalize = (id: string) => id.replace(/^0+/, '').trim();
+    
+    const notFound: string[] = [];
+    const idsToAdd: string[] = [];
+    
+    newIds.forEach(id => {
+      const normId = normalize(id);
+      const matchedPallet = session.masterData.find(p => normalize(p.palletId) === normId);
+      
+      if (matchedPallet) {
+        idsToAdd.push(matchedPallet.palletId); // Use the exact ID from master data
+      } else {
+        notFound.push(id);
+        idsToAdd.push(id); // Add it anyway so they can see it in the list
+      }
+    });
+    
     if (notFound.length > 0) {
       showAlert(`Los siguientes IDs no existen en la planilla maestra:\n${notFound.join(', ')}`);
     }
 
     setSession(prev => {
-      const uniqueIds = Array.from(new Set([...prev.searchIds, ...newIds]));
+      const uniqueIds = Array.from(new Set([...prev.searchIds, ...idsToAdd]));
       return { ...prev, searchIds: uniqueIds };
     });
     setSearchInput('');
@@ -243,7 +274,7 @@ export default function App() {
       }
       
       const matches = text.match(/\b\d{6,7}\b/g) || [];
-      const extractedIds = Array.from(new Set(matches));
+      const extractedIds = Array.from(new Set(matches)).filter(id => !/^0+$/.test(id));
       
       if (extractedIds.length > 0) {
         setSearchInput(prev => prev + (prev ? ' ' : '') + extractedIds.join(' '));
@@ -251,8 +282,9 @@ export default function App() {
       } else {
         showAlert('No se encontraron números de 6 o 7 dígitos en el archivo.');
       }
-    } catch (err) {
-      showAlert('Error al extraer datos del archivo.');
+    } catch (err: any) {
+      console.error("Error extrayendo datos:", err);
+      showAlert(`Error al extraer datos del archivo: ${err.message || 'Error desconocido'}`);
     }
     
     // Reset input
