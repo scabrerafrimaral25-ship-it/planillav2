@@ -48,6 +48,7 @@ function parseNumber(val: any): number {
 
 export default function App() {
   const [screen, setScreen] = useState<'home' | 'upload' | 'workspace'>('home');
+  const [isProcessing, setIsProcessing] = useState(false);
   const [session, setSession] = useState<Session>({
     version: 1,
     savedAt: new Date().toISOString(),
@@ -98,98 +99,110 @@ export default function App() {
   };
 
   const processExcel = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        if (!e.target?.result) throw new Error("No se pudo leer el archivo");
-        const data = new Uint8Array(e.target.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        let headerRowIdx = -1;
-        let colContenedor = 2;
-        let colCantidad = 3;
-        let colCajas = 4;
-        let colKilos = 5;
-        let colDesc = 6;
-        let colLote = 7;
+    setIsProcessing(true);
+    
+    // Usamos setTimeout para permitir que React renderice el estado de carga antes de bloquear el hilo principal
+    setTimeout(() => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          if (!e.target?.result) throw new Error("No se pudo leer el archivo");
+          const data = new Uint8Array(e.target.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          
+          let headerRowIdx = -1;
+          let colContenedor = 2;
+          let colCantidad = 3;
+          let colCajas = 4;
+          let colKilos = 5;
+          let colDesc = 6;
+          let colLote = 7;
 
-        for (let i = 0; i < Math.min(50, json.length); i++) {
-          const row = json[i] as any[];
-          if (!row) continue;
-          const rowStr = row.map(c => String(c || '').toLowerCase());
-          
-          const hasContenedor = rowStr.some(c => c.includes('contenedor') || c.includes('cntr') || c.includes('equipo'));
-          const hasLote = rowStr.some(c => c.includes('lote') || c.includes('pallet') || c.includes('id'));
-          
-          if (hasContenedor || hasLote) {
-            headerRowIdx = i;
+          for (let i = 0; i < Math.min(50, json.length); i++) {
+            const row = json[i] as any[];
+            if (!row) continue;
+            const rowStr = row.map(c => String(c || '').toLowerCase());
             
-            const findCol = (primaryKeywords: string[], secondaryKeywords: string[], fallback: number) => {
-              let idx = rowStr.findIndex(c => primaryKeywords.some(k => c.includes(k)));
-              if (idx === -1 && secondaryKeywords.length > 0) {
-                idx = rowStr.findIndex(c => secondaryKeywords.some(k => c.includes(k)));
-              }
-              return idx !== -1 ? idx : fallback;
-            };
+            const hasContenedor = rowStr.some(c => c.includes('contenedor') || c.includes('cntr') || c.includes('equipo'));
+            const hasLote = rowStr.some(c => c.includes('lote') || c.includes('pallet') || c.includes('id'));
             
-            colContenedor = findCol(['contenedor', 'cntr', 'equipo'], [], 2);
-            colLote = findCol(['lote', 'pallet', 'sscc'], ['código', 'codigo', 'id'], 7);
-            colCantidad = findCol(['cantidad', 'cant'], [], 3);
-            colCajas = findCol(['cajas', 'bultos', 'bx'], [], 4);
-            colKilos = findCol(['kilos', 'peso', 'kg', 'neto'], [], 5);
-            colDesc = findCol(['descripci', 'producto', 'item'], [], 6);
-            break;
+            if (hasContenedor || hasLote) {
+              headerRowIdx = i;
+              
+              const findCol = (primaryKeywords: string[], secondaryKeywords: string[], fallback: number) => {
+                let idx = rowStr.findIndex(c => primaryKeywords.some(k => c.includes(k)));
+                if (idx === -1 && secondaryKeywords.length > 0) {
+                  idx = rowStr.findIndex(c => secondaryKeywords.some(k => c.includes(k)));
+                }
+                return idx !== -1 ? idx : fallback;
+              };
+              
+              colContenedor = findCol(['contenedor', 'cntr', 'equipo'], [], 2);
+              colLote = findCol(['lote', 'pallet', 'sscc'], ['código', 'codigo', 'id'], 7);
+              colCantidad = findCol(['cantidad', 'cant'], [], 3);
+              colCajas = findCol(['cajas', 'bultos', 'bx'], [], 4);
+              colKilos = findCol(['kilos', 'peso', 'kg', 'neto'], [], 5);
+              colDesc = findCol(['descripci', 'producto', 'item'], [], 6);
+              break;
+            }
           }
-        }
 
-        const startRow = headerRowIdx !== -1 ? headerRowIdx + 1 : 0;
-        const pallets: Pallet[] = [];
-        
-        for (let i = startRow; i < json.length; i++) {
-          const row = json[i] as any[];
-          if (!row || row.length === 0) continue;
+          const startRow = headerRowIdx !== -1 ? headerRowIdx + 1 : 0;
+          const pallets: Pallet[] = [];
           
-          const containerId = String(row[colContenedor] || '').trim();
-          const palletId = String(row[colLote] || '').trim();
+          for (let i = startRow; i < json.length; i++) {
+            const row = json[i] as any[];
+            if (!row || row.length === 0) continue;
+            
+            const containerId = String(row[colContenedor] || '').trim();
+            const palletId = String(row[colLote] || '').trim();
+            
+            if (!containerId && !palletId) continue;
+            if (containerId.toLowerCase().includes('total') || palletId.toLowerCase().includes('total')) continue;
+            
+            pallets.push({
+              containerId,
+              palletId,
+              quantity: parseNumber(row[colCantidad]),
+              boxes: parseNumber(row[colCajas]),
+              weight: parseNumber(row[colKilos]),
+              description: String(row[colDesc] || '').trim(),
+            });
+          }
           
-          if (!containerId && !palletId) continue;
-          if (containerId.toLowerCase().includes('total') || palletId.toLowerCase().includes('total')) continue;
+          if (pallets.length === 0) {
+            showAlert('No se encontraron datos válidos. Verifica que el Excel tenga columnas como "Contenedor" y "Lote".');
+            return;
+          }
           
-          pallets.push({
-            containerId,
-            palletId,
-            quantity: parseNumber(row[colCantidad]),
-            boxes: parseNumber(row[colCajas]),
-            weight: parseNumber(row[colKilos]),
-            description: String(row[colDesc] || '').trim(),
-          });
+          setSession(prev => ({ 
+            ...prev, 
+            masterData: pallets, 
+            searchIds: [],
+            originalData: json,
+            colLote: colLote,
+            colContenedor: colContenedor
+          }));
+          setScreen('workspace');
+          showToast(`Cargados ${pallets.length} pallets exitosamente`);
+        } catch (err: any) {
+          console.error("Error procesando Excel:", err);
+          showAlert(`Error al procesar el archivo: ${err.message || 'Formato irreconocible'}`);
+        } finally {
+          setIsProcessing(false);
         }
-        
-        if (pallets.length === 0) {
-          showAlert('No se encontraron datos válidos. Verifica que el Excel tenga columnas como "Contenedor" y "Lote".');
-          return;
-        }
-        
-        setSession(prev => ({ 
-          ...prev, 
-          masterData: pallets, 
-          searchIds: [],
-          originalData: json,
-          colLote: colLote,
-          colContenedor: colContenedor
-        }));
-        setScreen('workspace');
-        showToast(`Cargados ${pallets.length} pallets exitosamente`);
-      } catch (err: any) {
-        console.error("Error procesando Excel:", err);
-        showAlert(`Error al procesar el archivo: ${err.message || 'Formato irreconocible'}`);
-      }
-    };
-    reader.onerror = () => showAlert('Error de lectura del archivo en el navegador.');
-    reader.readAsArrayBuffer(file);
+      };
+      
+      reader.onerror = () => {
+        showAlert('Error de lectura del archivo en el navegador.');
+        setIsProcessing(false);
+      };
+      
+      reader.readAsArrayBuffer(file);
+    }, 100);
   };
 
   const loadSession = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -265,64 +278,33 @@ export default function App() {
     if (!file) return;
     
     try {
-      let extractedIds: string[] = [];
-      
+      let text = '';
       if (file.name.toLowerCase().endsWith('.pdf')) {
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        const textParts: string[] = [];
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
-          const pageText = textContent.items
-            .map((item: any) => (item && typeof item.str === 'string' ? item.str : ''))
-            .filter((str: string) => str.length > 0);
-          textParts.push(...pageText);
-        }
-        const fullText = textParts.join(' ');
-        const regex = /(?:^|[^\d])(\d{6,7})(?=[^\d]|$)/g;
-        let match;
-        while ((match = regex.exec(fullText)) !== null) {
-          extractedIds.push(match[1]);
+          text += textContent.items.map((item: any) => item.str).join(' ') + ' ';
         }
       } else {
         const arrayBuffer = await file.arrayBuffer();
         const workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' });
-        const firstSheet = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheet];
-        const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        extractedIds = json.flat()
-          .map((item: any) => String(item).trim())
-          .filter((item: string) => /^\d{6,7}$/.test(item));
+        workbook.SheetNames.forEach(sheetName => {
+          const worksheet = workbook.Sheets[sheetName];
+          const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          json.forEach((row: any) => {
+            text += row.join(' ') + ' ';
+          });
+        });
       }
       
-      extractedIds = Array.from(new Set(extractedIds)).filter(id => !/^0+$/.test(id));
+      const matches = text.match(/\b\d{6,7}\b/g) || [];
+      const extractedIds = Array.from(new Set(matches)).filter(id => !/^0+$/.test(id));
       
       if (extractedIds.length > 0) {
-        const normalize = (id: string) => id.replace(/^0+/, '').trim();
-        const notFound: string[] = [];
-        const idsToAdd: string[] = [];
-        
-        extractedIds.forEach(id => {
-          const normId = normalize(id);
-          const matchedPallet = session.masterData.find(p => normalize(p.palletId) === normId);
-          if (matchedPallet) {
-            idsToAdd.push(matchedPallet.palletId);
-          } else {
-            notFound.push(id);
-            idsToAdd.push(id);
-          }
-        });
-        
-        if (notFound.length > 0) {
-          showAlert(`Los siguientes IDs extraídos no existen en la planilla maestra:\n${notFound.join(', ')}`);
-        }
-        
-        setSession(prev => {
-          const uniqueIds = Array.from(new Set([...prev.searchIds, ...idsToAdd]));
-          return { ...prev, searchIds: uniqueIds };
-        });
-        showToast(`Se agregaron ${extractedIds.length} IDs del archivo`);
+        setSearchInput(prev => prev + (prev ? ' ' : '') + extractedIds.join(' '));
+        showToast(`Se extrajeron ${extractedIds.length} IDs del archivo`);
       } else {
         showAlert('No se encontraron números de 6 o 7 dígitos en el archivo.');
       }
@@ -504,7 +486,13 @@ export default function App() {
         <Home size={20} /> Volver al inicio
       </button>
       
-      <div className="max-w-2xl w-full bg-white rounded-2xl shadow-sm p-8 border border-gray-100">
+      <div className="max-w-2xl w-full bg-white rounded-2xl shadow-sm p-8 border border-gray-100 relative">
+        {isProcessing && (
+          <div className="absolute inset-0 bg-white/80 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center z-10">
+            <div className="w-12 h-12 border-4 border-accent border-t-transparent rounded-full animate-spin mb-4"></div>
+            <p className="text-gray-700 font-medium">Procesando archivo...</p>
+          </div>
+        )}
         <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">Subir Excel Maestro</h2>
         
         <div 
