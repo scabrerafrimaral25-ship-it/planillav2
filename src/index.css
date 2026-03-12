@@ -7,9 +7,11 @@
   
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
-  --color-accent: #22c55e;
-  --color-green: #16a34a;
+  --color-accent: #4f46e5;
+  --color-green: #22c55e;
   --color-red: #ef4444;
+  --color-indigo-600: #4f46e5;
+  --color-indigo-700: #4338ca;
 }
 
 body {

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx-js-style';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
+// @ts-ignore
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.js?url';
 import { Upload, FileJson, Search, Plus, Trash2, Printer, Download, Save, Home, AlertCircle, FileText, FileSpreadsheet, Database, LayoutList } from 'lucide-react';
 
@@ -51,6 +52,7 @@ export default function App() {
   const [screen, setScreen] = useState<'home' | 'upload' | 'workspace'>('home');
   const [activeTab, setActiveTab] = useState<'plan' | 'database'>('plan');
   const [globalSearch, setGlobalSearch] = useState('');
+  const [showAllContainers, setShowAllContainers] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [session, setSession] = useState<Session>({
     version: 1,
@@ -75,12 +77,12 @@ export default function App() {
   const fixedMasterData = useMemo(() => {
     let currentContainer = '';
     return session.masterData.map(p => {
-      if (p.containerId) {
-        currentContainer = p.containerId;
-        return p;
-      } else {
-        return { ...p, containerId: currentContainer };
+      const cid = String(p.containerId || '').trim();
+      // Only update currentContainer if we find a new valid one (not empty, not "TOTAL")
+      if (cid && !cid.toLowerCase().includes('total')) {
+        currentContainer = cid;
       }
+      return { ...p, containerId: currentContainer };
     });
   }, [session.masterData]);
 
@@ -198,7 +200,14 @@ export default function App() {
           const quantity = parseNumber(row[colCantidad]);
           
           if (!palletId && !description && !quantity) continue;
-          if (containerId.toLowerCase().includes('total') || palletId.toLowerCase().includes('total')) continue;
+          
+          // Precise detection of total rows to avoid including them as pallets
+          const isTotalRow = (s: string) => {
+            const n = s.toLowerCase().trim();
+            return n === 'total' || n.startsWith('total ') || n.startsWith('total:') || n.includes('total general');
+          };
+          
+          if (isTotalRow(containerId) || (palletId && isTotalRow(palletId) && !description)) continue;
           
           pallets.push({
             containerId,
@@ -380,8 +389,32 @@ export default function App() {
     // Header rows
     wsData.push([]); // Row 1: Empty
     wsData.push(['PLANILLA DE CARGA', '', '', '', '', '', '']); // Row 2
-    wsData.push(['Contenedor', 'Cant.', 'Bultos', 'Peso', 'Descripción', '', 'Pallet ID']); // Row 3
     
+    // Summary section at the top
+    const totalBultos = searchedPallets.reduce((sum, p) => sum + p.boxes, 0);
+    const totalKilos = searchedPallets.reduce((sum, p) => sum + p.weight, 0);
+    const cotes = Array.from(new Set(
+      searchedPallets
+        .map(p => {
+          const match = p.description.match(/COTE\s*[P\d]+/i);
+          return match ? match[0].toUpperCase() : null;
+        })
+        .filter(Boolean)
+    )) as string[];
+
+    wsData.push(['', '', '', '', 'RESUMEN TOTAL (SOLO BUSCADOS)', '', '']);
+    wsData.push(['', '', '', '', 'TOTAL PALLETS', 'CAJAS', 'KG']);
+    wsData.push(['', '', '', '', searchedPallets.length, totalBultos, totalKilos]);
+    wsData.push(['', '', '', '', 'COTES DE INGRESO (UNICOS)', '', '']);
+    cotes.forEach(cote => {
+      wsData.push(['', '', '', '', cote, '', '']);
+    });
+    
+    wsData.push([]); // Empty row
+    wsData.push(['Contenedor', 'Cant.', 'Bultos', 'Peso', 'Descripción', '', 'Pallet ID']); // Header Row for data
+    
+    const dataHeaderRow = wsData.length - 1;
+
     // Data rows
     containersWithSearched.forEach(containerId => {
       const containerPallets = fixedMasterData.filter(p => p.containerId === containerId);
@@ -393,7 +426,7 @@ export default function App() {
           p.boxes,
           p.weight,
           p.description,
-          '', // Empty column F
+          '',
           p.palletId
         ]);
       });
@@ -401,42 +434,18 @@ export default function App() {
       wsData.push([]); // Empty row between containers
     });
 
-    // Summary section
-    const totalBultos = searchedPallets.reduce((sum, p) => sum + p.boxes, 0);
-    const totalKilos = searchedPallets.reduce((sum, p) => sum + p.weight, 0);
-    const cotes = Array.from(new Set(
-      searchedPallets
-        .map(p => p.description.match(/COTE P\d+/i)?.[0])
-        .filter(Boolean)
-    ));
-
-    wsData.push([]); // Empty row before summary
-    wsData.push([]); 
-    
-    const summaryStartRow = wsData.length;
-    
-    wsData.push(['', '', '', '', 'RESUMEN TOTAL (SOLO BUSCADOS)', '', '']);
-    wsData.push(['', '', '', '', 'TOTAL PALLETS', 'CAJAS', 'KG']);
-    wsData.push(['', '', '', '', searchedPallets.length, totalBultos, totalKilos]);
-    wsData.push([]);
-    wsData.push(['', '', '', '', 'COTES DE INGRESO (UNICOS)', '', '']);
-    cotes.forEach(cote => {
-      wsData.push(['', '', '', '', cote, '', '']);
-    });
-
     const ws = XLSX.utils.aoa_to_sheet(wsData);
     
     // Apply styles
-    // Merge A2:G2
-    ws['!merges'] = [
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }
-    ];
+    // Merge Title
+    if (!ws['!merges']) ws['!merges'] = [];
+    ws['!merges'].push({ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } });
     
     // Merge summary headers
-    ws['!merges'].push({ s: { r: summaryStartRow, c: 4 }, e: { r: summaryStartRow, c: 6 } });
-    ws['!merges'].push({ s: { r: summaryStartRow + 4, c: 4 }, e: { r: summaryStartRow + 4, c: 6 } });
+    ws['!merges'].push({ s: { r: 2, c: 4 }, e: { r: 2, c: 6 } });
+    ws['!merges'].push({ s: { r: 5, c: 4 }, e: { r: 5, c: 6 } });
     for (let i = 0; i < cotes.length; i++) {
-      ws['!merges'].push({ s: { r: summaryStartRow + 5 + i, c: 4 }, e: { r: summaryStartRow + 5 + i, c: 6 } });
+      ws['!merges'].push({ s: { r: 6 + i, c: 4 }, e: { r: 6 + i, c: 6 } });
     }
     
     // Column widths
@@ -446,82 +455,23 @@ export default function App() {
       { wch: 8 },  // Bultos
       { wch: 8 },  // Peso
       { wch: 60 }, // Descripción
-      { wch: 8 },  // CAJAS
-      { wch: 12 }, // Pallet ID / KG
+      { wch: 8 },  // Empty
+      { wch: 15 }, // Pallet ID
     ];
 
-    // Style Header Row 2
+    // Style Title
     if (ws['A2']) {
       ws['A2'].s = {
-        font: { bold: true, sz: 14 },
+        font: { bold: true, sz: 16 },
         alignment: { horizontal: 'center', vertical: 'center' }
       };
     }
-    
-    // Style Header Row 3
-    const headers = ['A3', 'B3', 'C3', 'D3', 'E3', 'F3', 'G3'];
-    headers.forEach(ref => {
-      if (ws[ref]) {
-        ws[ref].s = {
-          font: { bold: true },
-          alignment: { horizontal: 'center', vertical: 'center' },
-          border: {
-            top: { style: 'thin' },
-            bottom: { style: 'thin' },
-            left: { style: 'thin' },
-            right: { style: 'thin' }
-          }
-        };
-      }
-    });
 
-    // Style Data Rows
-    for (let R = 3; R < wsData.length; R++) {
-      const row = wsData[R];
-      if (!row || row.length === 0) continue; // Empty row
-      
-      // Check if it's a summary row
-      if (R >= summaryStartRow) {
-        if (row[4] !== undefined && row[4] !== '') {
-          for (let C = 4; C <= 6; C++) {
-            const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
-            if (!ws[cellRef]) ws[cellRef] = { t: 's', v: '' };
-            
-            ws[cellRef].s = {
-              border: {
-                top: { style: 'thin' },
-                bottom: { style: 'thin' },
-                left: { style: 'thin' },
-                right: { style: 'thin' }
-              }
-            };
-            
-            if (R === summaryStartRow || R === summaryStartRow + 4) {
-              ws[cellRef].s.font = { bold: true };
-              ws[cellRef].s.fill = { patternType: 'solid', fgColor: { rgb: 'E5E7EB' } }; // Light gray
-            }
-          }
-        }
-        continue;
-      }
-      
-      const palletId = String(row[6] || '').trim();
-      const description = String(row[4] || '').trim();
-      if (!palletId && !description) continue;
-      
-      const normPalletId = normalize(palletId);
-      const normDesc = normalize(description);
-      
-      const isSearched = normalizedSearchIds.some(id => 
-        normPalletId === id || normDesc.includes(id)
-      );
-      
-      // Apply borders to all cells in the row
-      for (let C = 0; C <= 6; C++) {
+    // Style Summary
+    for (let R = 2; R < dataHeaderRow - 1; R++) {
+      for (let C = 4; C <= 6; C++) {
         const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
-        if (!ws[cellRef]) {
-          ws[cellRef] = { t: 's', v: '' }; // Create empty cell if missing
-        }
+        if (!ws[cellRef]) ws[cellRef] = { t: 's', v: '' };
         
         ws[cellRef].s = {
           border: {
@@ -532,20 +482,83 @@ export default function App() {
           }
         };
         
-        // Highlight Pallet ID cell if searched
-        if (C === 6 && isSearched) {
-          ws[cellRef].s.fill = {
-            patternType: 'solid',
-            fgColor: { rgb: 'FFFFFF00' } // Yellow
-          };
+        if (R === 2 || R === 3 || R === 5) {
           ws[cellRef].s.font = { bold: true };
+          ws[cellRef].s.fill = { patternType: 'solid', fgColor: { rgb: 'F3F4F6' } };
         }
+      }
+    }
+    
+    // Style Data Header
+    for (let C = 0; C <= 6; C++) {
+      const cellRef = XLSX.utils.encode_cell({ r: dataHeaderRow, c: C });
+      if (ws[cellRef]) {
+        ws[cellRef].s = {
+          font: { bold: true, color: { rgb: 'FFFFFF' } },
+          fill: { patternType: 'solid', fgColor: { rgb: '1E3A8A' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: {
+            top: { style: 'thin' },
+            bottom: { style: 'thin' },
+            left: { style: 'thin' },
+            right: { style: 'thin' }
+          }
+        };
+      }
+    }
+
+    // Style Data Rows
+    for (let R = dataHeaderRow + 1; R < wsData.length; R++) {
+      const row = wsData[R];
+      if (!row || row.length === 0) continue;
+
+      const palletId = String(row[6] || '').trim();
+      const description = String(row[4] || '').trim();
+      
+      const normPalletId = normalize(palletId);
+      const normDesc = normalize(description);
+      
+      const isSearched = normalizedSearchIds.some(id => 
+        normPalletId === id || normDesc.includes(id)
+      );
+      
+      for (let C = 0; C <= 6; C++) {
+        const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
+        if (!ws[cellRef]) ws[cellRef] = { t: 's', v: '' };
+        
+        ws[cellRef].s = {
+          border: {
+            top: { style: 'thin' },
+            bottom: { style: 'thin' },
+            left: { style: 'thin' },
+            right: { style: 'thin' }
+          },
+          fill: isSearched ? { patternType: 'solid', fgColor: { rgb: 'FFFF00' } } : undefined,
+          font: isSearched ? { bold: true } : undefined
+        };
       }
     }
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Plan de Carga");
-    XLSX.writeFile(wb, `${session.sessionName || 'plan_carga'}.xlsx`);
+
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'binary' });
+    const s2ab = (s: string) => {
+      const buf = new ArrayBuffer(s.length);
+      const view = new Uint8Array(buf);
+      for (let i = 0; i !== s.length; ++i) view[i] = s.charCodeAt(i) & 0xFF;
+      return buf;
+    };
+    
+    const blob = new Blob([s2ab(wbout)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${session.sessionName || 'plan_carga'}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // Render logic
@@ -639,74 +652,67 @@ export default function App() {
     const normalize = (val: string) => String(val).replace(/[^a-zA-Z0-9]/g, '').replace(/^0+/, '').toLowerCase();
     const normalizedSearchIds = session.searchIds.map(id => normalize(id));
     
-    const searchedPallets = session.masterData.filter(p => {
+    const searchedPallets = fixedMasterData.filter(p => {
+      const normContId = normalize(p.containerId);
+      const matchCont = normalizedSearchIds.some(id => id && (normContId === id || normContId.includes(id)));
       const matchId = normalizedSearchIds.includes(normalize(p.palletId));
-      const matchDesc = normalizedSearchIds.some(id => normalize(p.description).includes(id));
-      const matchRaw = p.rawRow ? normalizedSearchIds.some(id => normalize(p.rawRow!).includes(id)) : false;
-      return matchId || matchDesc || matchRaw;
+      const matchDesc = normalizedSearchIds.some(id => id && normalize(p.description).includes(id));
+      const matchRaw = p.rawRow ? normalizedSearchIds.some(id => id && normalize(p.rawRow!).includes(id)) : false;
+      return matchCont || matchId || matchDesc || matchRaw;
     });
     
     const containersWithSearched = Array.from(new Set(
       searchedPallets.map(p => p.containerId)
-    ));
+    )).filter(Boolean);
 
     const totalBultos = searchedPallets.reduce((sum, p) => sum + p.boxes, 0);
     const totalKilos = searchedPallets.reduce((sum, p) => sum + p.weight, 0);
     const cotes = Array.from(new Set(
       searchedPallets
-        .map(p => p.description.match(/COTE P\d+/i)?.[0])
+        .map(p => {
+          const match = p.description.match(/COTE\s*[P\d]+/i);
+          return match ? match[0].toUpperCase() : null;
+        })
         .filter(Boolean)
-    ));
+    )) as string[];
 
     return (
       <div className="min-h-screen flex flex-col">
         {/* Header */}
-        <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 no-print">
-          <div className="flex items-center gap-4">
-            <div className="bg-accent text-white p-2 rounded-lg">
-              <Upload size={24} />
+        <header className="bg-white border-b border-gray-200 px-8 py-4 flex items-center justify-between sticky top-0 z-10 no-print">
+          <div className="flex items-center gap-3">
+            <div className="bg-indigo-600 text-white p-2 rounded-lg shadow-sm">
+              <FileSpreadsheet size={24} />
             </div>
-            <h1 className="text-xl font-bold text-gray-800 hidden sm:block">Gestor de Carga</h1>
-            <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-sm font-medium">
-              {session.masterData.length} pallets
-            </div>
+            <h1 className="text-2xl font-bold text-gray-800 tracking-tight">Gestor de Carga</h1>
           </div>
           
-          <div className="flex bg-gray-100 p-1 rounded-lg">
-            <button
-              onClick={() => setActiveTab('plan')}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'plan' ? 'bg-white text-accent shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-            >
-              <LayoutList size={16} /> Plan de Carga
-            </button>
-            <button
-              onClick={() => setActiveTab('database')}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'database' ? 'bg-white text-accent shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-            >
-              <Database size={16} /> Base de Datos
-            </button>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            <input 
-              type="text" 
-              value={session.sessionName}
-              onChange={(e) => setSession({...session, sessionName: e.target.value})}
-              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 w-48"
-              placeholder="Nombre de sesión"
-            />
-            <button onClick={() => window.print()} className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-md" title="Imprimir">
-              <Printer size={20} />
-            </button>
-            <button onClick={exportExcel} className="p-2 text-green hover:text-green-700 hover:bg-green/10 rounded-md" title="Exportar Excel">
-              <Download size={20} />
-            </button>
-            <button onClick={saveSession} className="p-2 text-accent hover:text-accent-700 hover:bg-accent/10 rounded-md" title="Guardar Sesión">
-              <Save size={20} />
-            </button>
-            <button onClick={() => setScreen('home')} className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-md" title="Inicio">
-              <Home size={20} />
-            </button>
+          <div className="flex items-center gap-6">
+            <div className="text-gray-400 text-sm font-medium">
+              <span className="font-bold text-gray-500">{session.masterData.length}</span> Pallets Cargados
+            </div>
+            <div className="flex items-center gap-4 border-l border-gray-100 pl-6">
+              <button 
+                onClick={() => window.print()} 
+                className="text-gray-400 hover:text-indigo-600 transition-colors"
+                title="Imprimir Planilla"
+              >
+                <Printer size={20} />
+              </button>
+              <button 
+                onClick={exportExcel} 
+                className="text-gray-400 hover:text-green-600 transition-colors"
+                title="Exportar a Excel"
+              >
+                <Download size={20} />
+              </button>
+              <button 
+                onClick={() => setScreen('upload')}
+                className="text-indigo-600 hover:text-indigo-800 text-sm font-medium transition-colors"
+              >
+                Cambiar Archivo
+              </button>
+            </div>
           </div>
         </header>
 
@@ -788,6 +794,18 @@ export default function App() {
                       </div>
                     )}
                   </div>
+
+                  <div className="mb-4">
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <div 
+                        onClick={() => setShowAllContainers(!showAllContainers)}
+                        className={`w-10 h-5 rounded-full transition-colors relative ${showAllContainers ? 'bg-accent' : 'bg-gray-300'}`}
+                      >
+                        <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform ${showAllContainers ? 'translate-x-5' : ''}`}></div>
+                      </div>
+                      <span className="text-sm text-gray-600 group-hover:text-gray-900 transition-colors">Ver todos los contenedores</span>
+                    </label>
+                  </div>
                   
                   <ul className="space-y-1">
                     {session.searchIds.map(id => {
@@ -818,93 +836,68 @@ export default function App() {
               </aside>
 
               {/* Content */}
-              <div className="flex-1 overflow-y-auto p-6 bg-bg">
+              <div className="flex-1 overflow-y-auto p-8 bg-bg">
                 {containersWithSearched.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-gray-400">
                     <Search size={64} className="mb-4 opacity-20" />
                     <p className="text-lg">Ingresa IDs de pallets para ver el plan de carga</p>
                   </div>
                 ) : (
-                  <div className="max-w-5xl mx-auto space-y-6">
-                    {/* Summary Card */}
-                    <div className="bg-[#1e3a8a] text-white rounded-xl shadow-md p-6">
-                      <h2 className="text-xl font-bold mb-4 opacity-90">Resumen de Carga</h2>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                        <div>
-                          <p className="text-blue-200 text-sm mb-1">Pallets Buscados</p>
-                          <p className="text-3xl font-mono font-bold">{searchedPallets.length}</p>
-                        </div>
-                        <div>
-                          <p className="text-blue-200 text-sm mb-1">Total Bultos</p>
-                          <p className="text-3xl font-mono font-bold">{totalBultos}</p>
-                        </div>
-                        <div>
-                          <p className="text-blue-200 text-sm mb-1">Total Peso (kg)</p>
-                          <p className="text-3xl font-mono font-bold">{totalKilos.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-                        </div>
-                        <div>
-                          <p className="text-blue-200 text-sm mb-1">Cotes de Ingreso</p>
-                          <p className="text-lg font-mono font-medium leading-tight">
-                            {cotes.length > 0 ? cotes.join(', ') : '-'}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex justify-between items-center mb-6">
-                      <h2 className="text-2xl font-bold text-gray-900">Planilla de Carga Generada</h2>
-                      <div className="flex gap-3">
-                        <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium text-sm transition-colors">
-                          <Printer size={16} /> Imprimir
-                        </button>
-                        <button onClick={exportExcel} className="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-lg hover:bg-accent/90 font-medium text-sm transition-colors shadow-sm">
-                          <Download size={16} /> Exportar Excel
-                        </button>
-                      </div>
-                    </div>
-
+                  <div className="max-w-5xl mx-auto space-y-8">
                     {/* Container Cards */}
-                    {containersWithSearched.map(containerId => {
+                    {(showAllContainers 
+                      ? Array.from(new Set(fixedMasterData.map(p => p.containerId))).filter(Boolean)
+                      : containersWithSearched
+                    ).map(containerId => {
                       const containerPallets = fixedMasterData.filter(p => p.containerId === containerId);
+                      const searchedInCont = containerPallets.filter(p => 
+                        normalizedSearchIds.some(id => 
+                          normalize(p.palletId) === id || 
+                          normalize(p.description).includes(id) || 
+                          (p.rawRow ? normalize(p.rawRow).includes(id) : false)
+                        )
+                      );
+                      
                       const contTotalBultos = containerPallets.reduce((sum, p) => sum + p.boxes, 0);
                       const contTotalKilos = containerPallets.reduce((sum, p) => sum + p.weight, 0);
                       const contTotalCant = containerPallets.reduce((sum, p) => sum + p.quantity, 0);
                       
                       return (
-                        <div key={containerId} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden break-inside-avoid">
-                          <div className="px-6 py-4 flex justify-between items-center bg-white">
-                            <div className="flex items-center gap-4">
-                              <div className="w-10 h-10 rounded-lg bg-green-100 text-green-600 flex items-center justify-center">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-9h-5V5h-7"/><path d="M15 17h2"/><circle cx="8.5" cy="17.5" r="1.5"/><circle cx="18.5" cy="17.5" r="1.5"/></svg>
+                        <div key={containerId} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden break-inside-avoid">
+                          <div className="px-8 py-6 flex justify-between items-center bg-white">
+                            <div className="flex items-center gap-5">
+                              <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-9h-5V5h-7"/><path d="M15 17h2"/><circle cx="8.5" cy="17.5" r="1.5"/><circle cx="18.5" cy="17.5" r="1.5"/></svg>
                               </div>
                               <div>
-                                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                                <h3 className="text-xl font-bold text-gray-900 tracking-tight">
                                   {containerId}
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><path d="m18 15-6-6-6 6"/></svg>
                                 </h3>
-                                <p className="text-sm text-gray-500">Contenedor</p>
+                                <p className="text-sm text-gray-400 font-medium">Contenedor</p>
                               </div>
                             </div>
-                            <div className="flex items-center gap-8 text-right">
+                            <div className="flex items-center gap-10 text-right">
                               <div>
-                                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Pallets</p>
-                                <p className="text-lg font-bold text-gray-900">{containerPallets.length}</p>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">Filas / Cant.</p>
+                                <p className="text-xl font-black text-gray-900">
+                                  {containerPallets.length} <span className="text-gray-300 mx-1">/</span> {contTotalCant}
+                                </p>
                               </div>
                               <div>
-                                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Peso Total</p>
-                                <p className="text-lg font-bold text-gray-900">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 3})} kg</p>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">Peso Total</p>
+                                <p className="text-xl font-black text-gray-900">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})} kg</p>
                               </div>
                             </div>
                           </div>
                           <div className="overflow-x-auto">
                             <table className="w-full text-left text-sm">
-                              <thead className="text-gray-500 border-b border-gray-100 bg-white">
+                              <thead className="text-gray-400 border-b border-gray-50 bg-white">
                                 <tr>
-                                  <th className="px-6 py-3 font-medium">Pallet ID</th>
-                                  <th className="px-6 py-3 font-medium">Descripción</th>
-                                  <th className="px-6 py-3 font-medium text-right">Bultos</th>
-                                  <th className="px-6 py-3 font-medium text-right">Cant.</th>
-                                  <th className="px-6 py-3 font-medium text-right">Peso</th>
+                                  <th className="px-8 py-4 font-medium">Pallet ID</th>
+                                  <th className="px-8 py-4 font-medium">Descripción</th>
+                                  <th className="px-8 py-4 font-medium text-right">Bultos</th>
+                                  <th className="px-8 py-4 font-medium text-right">Cant.</th>
+                                  <th className="px-8 py-4 font-medium text-right">Peso</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-gray-50">
@@ -915,25 +908,25 @@ export default function App() {
                                     (p.rawRow ? normalize(p.rawRow).includes(id) : false)
                                   );
                                   return (
-                                    <tr key={`${p.palletId}-${idx}`} className={`${isSearched ? 'bg-[#fffaeb]' : 'bg-white hover:bg-gray-50'} relative transition-colors`}>
+                                    <tr key={`${p.palletId}-${idx}`} className={`${isSearched ? 'bg-[#fffbeb]' : 'bg-white'} relative transition-all`}>
                                       {isSearched && (
-                                        <td className="absolute left-0 top-0 bottom-0 w-1 bg-indigo-500"></td>
+                                        <td className="absolute left-0 top-0 bottom-0 w-1 bg-indigo-600"></td>
                                       )}
-                                      <td className={`px-6 py-3 font-mono ${isSearched ? 'font-bold text-indigo-600' : 'text-gray-500'}`}>{p.palletId}</td>
-                                      <td className={`px-6 py-3 max-w-xs truncate ${isSearched ? 'text-gray-900 font-medium' : 'text-gray-500'}`} title={p.description}>{p.description}</td>
-                                      <td className={`px-6 py-3 text-right ${isSearched ? 'text-gray-900 font-medium' : 'text-gray-500'}`}>{p.boxes}</td>
-                                      <td className={`px-6 py-3 text-right ${isSearched ? 'text-gray-900 font-medium' : 'text-gray-500'}`}>{p.quantity}</td>
-                                      <td className={`px-6 py-3 text-right ${isSearched ? 'text-gray-900 font-medium' : 'text-gray-500'}`}>{p.weight}</td>
+                                      <td className={`px-8 py-4 font-medium text-indigo-600`}>{p.palletId}</td>
+                                      <td className={`px-8 py-4 max-w-lg truncate ${isSearched ? 'text-gray-700' : 'text-gray-400'}`} title={p.description}>{p.description}</td>
+                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-700' : 'text-gray-400'}`}>{p.boxes}</td>
+                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-700' : 'text-gray-400'}`}>{p.quantity}</td>
+                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-700' : 'text-gray-400'}`}>{p.weight}</td>
                                     </tr>
                                   );
                                 })}
                               </tbody>
-                              <tfoot className="bg-white font-bold text-gray-800 border-t border-gray-100">
+                              <tfoot className="bg-white font-bold text-gray-900 border-t border-gray-50">
                                 <tr>
-                                  <td colSpan={2} className="px-6 py-4 text-right text-sm">Total Contenedor</td>
-                                  <td className="px-6 py-4 text-right">{contTotalBultos}</td>
-                                  <td className="px-6 py-4 text-right">{contTotalCant}</td>
-                                  <td className="px-6 py-4 text-right">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 3})}</td>
+                                  <td colSpan={2} className="px-8 py-5 text-right text-sm font-bold">Total Contenedor</td>
+                                  <td className="px-8 py-5 text-right">{contTotalBultos}</td>
+                                  <td className="px-8 py-5 text-right">{contTotalCant}</td>
+                                  <td className="px-8 py-5 text-right">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 3})}</td>
                                 </tr>
                               </tfoot>
                             </table>
@@ -973,7 +966,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {session.masterData
+                    {fixedMasterData
                       .filter(p => 
                         !globalSearch || 
                         p.palletId.toLowerCase().includes(globalSearch.toLowerCase()) ||
@@ -991,7 +984,7 @@ export default function App() {
                         <td className="px-6 py-3 text-right font-mono text-gray-700">{p.weight.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
                       </tr>
                     ))}
-                    {session.masterData.length > 500 && !globalSearch && (
+                    {fixedMasterData.length > 500 && !globalSearch && (
                       <tr>
                         <td colSpan={6} className="px-6 py-4 text-center text-gray-500 text-sm italic">
                           Mostrando los primeros 500 pallets. Usa el buscador para encontrar pallets específicos.
