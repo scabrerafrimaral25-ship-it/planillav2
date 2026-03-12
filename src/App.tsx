@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx-js-style';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 // @ts-ignore
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.js?url';
-import { Upload, FileJson, Search, Plus, Trash2, Printer, Download, Save, Home, AlertCircle, FileText, FileSpreadsheet, Database, LayoutList } from 'lucide-react';
+import { Upload, FileJson, Search, Plus, Trash2, Printer, Download, Save, Home, AlertCircle, FileText, FileSpreadsheet, Database, LayoutList, Package } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -682,7 +682,7 @@ export default function App() {
         <header className="bg-white border-b border-gray-200 px-8 py-4 flex items-center justify-between sticky top-0 z-10 no-print">
           <div className="flex items-center gap-3">
             <div className="bg-indigo-600 text-white p-2 rounded-lg shadow-sm">
-              <FileSpreadsheet size={24} />
+              <Package size={24} />
             </div>
             <h1 className="text-2xl font-bold text-gray-800 tracking-tight">Gestor de Carga</h1>
           </div>
@@ -878,14 +878,14 @@ export default function App() {
                             </div>
                             <div className="flex items-center gap-10 text-right">
                               <div>
-                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">Filas / Cant.</p>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">Pallets</p>
                                 <p className="text-xl font-black text-gray-900">
-                                  {containerPallets.length} <span className="text-gray-300 mx-1">/</span> {contTotalCant}
+                                  {containerPallets.length}
                                 </p>
                               </div>
                               <div>
                                 <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">Peso Total</p>
-                                <p className="text-xl font-black text-gray-900">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})} kg</p>
+                                <p className="text-xl font-black text-gray-900">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})} kg</p>
                               </div>
                             </div>
                           </div>
@@ -923,10 +923,10 @@ export default function App() {
                               </tbody>
                               <tfoot className="bg-white font-bold text-gray-900 border-t border-gray-50">
                                 <tr>
-                                  <td colSpan={2} className="px-8 py-5 text-right text-sm font-bold">Total Contenedor</td>
-                                  <td className="px-8 py-5 text-right">{contTotalBultos}</td>
-                                  <td className="px-8 py-5 text-right">{contTotalCant}</td>
-                                  <td className="px-8 py-5 text-right">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 3})}</td>
+                                  <td colSpan={2} className="px-8 py-4 text-right text-sm font-bold text-gray-600">Total Contenedor</td>
+                                  <td className="px-8 py-4 text-right">{contTotalBultos}</td>
+                                  <td className="px-8 py-4 text-right">{contTotalCant}</td>
+                                  <td className="px-8 py-4 text-right">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</td>
                                 </tr>
                               </tfoot>
                             </table>
