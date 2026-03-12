@@ -31,21 +31,16 @@ type Session = {
 function parseNumber(val: any): number {
   if (typeof val === 'number') return val;
   if (!val) return 0;
-  let str = String(val).trim();
-  if (str.includes('.') && str.includes(',')) {
-    if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
-      str = str.replace(/\./g, '').replace(',', '.');
-    } else {
-      str = str.replace(/,/g, '');
-    }
-  } else if (str.includes(',')) {
-    if (str.match(/,\d{1,2}$/)) {
-      str = str.replace(',', '.');
-    } else {
-      str = str.replace(/,/g, '');
-    }
+  let s = String(val).replace(/[^\d,.-]/g, '');
+  const lastComma = s.lastIndexOf(',');
+  const lastDot = s.lastIndexOf('.');
+  
+  if (lastComma > lastDot && lastComma !== -1) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (lastDot > lastComma && lastDot !== -1) {
+    s = s.replace(/,/g, '');
   }
-  return parseFloat(str) || 0;
+  return parseFloat(s) || 0;
 }
 
 export default function App() {
@@ -134,26 +129,39 @@ export default function App() {
 
       workbook.SheetNames.forEach(sheetName => {
         const worksheet = workbook.Sheets[sheetName];
-        const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+        if (json.length === 0) return;
         allJson = allJson.concat(json);
         
         let headerRowIdx = -1;
-        let colContenedor = lastColContenedor;
-        let colCantidad = lastColCantidad;
-        let colCajas = lastColCajas;
-        let colKilos = lastColKilos;
-        let colDesc = lastColDesc;
-        let colLote = lastColLote;
+        let colContenedor = -1;
+        let colLote = -1;
+        let colCantidad = -1;
+        let colCajas = -1;
+        let colKilos = -1;
+        let colDesc = -1;
+
+        let currentContainerId = '';
 
         for (let i = 0; i < Math.min(50, json.length); i++) {
-          const row = json[i] as any[];
+          const row = json[i];
           if (!row) continue;
           const rowStr = row.map(c => String(c || '').toLowerCase());
           
-          const hasContenedor = rowStr.some(c => c.includes('contenedor') || c.includes('cntr') || c.includes('equipo'));
-          const hasLote = rowStr.some(c => c.includes('lote') || c.includes('pallet') || c.includes('id'));
+          // Try to find container ID in headers above the table
+          const contIdx = rowStr.findIndex(c => c.includes('contenedor') || c.includes('equipo'));
+          if (contIdx !== -1) {
+            const val = String(row[contIdx]);
+            const match = val.match(/(?:contenedor|equipo)[:\s]+([A-Z0-9]+)/i);
+            if (match) currentContainerId = match[1].toUpperCase();
+            else if (row[contIdx + 1] && String(row[contIdx + 1]).length > 5) {
+              currentContainerId = String(row[contIdx + 1]).toUpperCase();
+            }
+          }
+
+          const hasLote = rowStr.some(c => c.includes('lote') || c.includes('pallet') || c.includes('sscc') || c.includes('nro. bulto'));
           
-          if (hasContenedor || hasLote) {
+          if (hasLote) {
             headerRowIdx = i;
             
             const findCol = (primaryKeywords: string[], secondaryKeywords: string[], fallback: number) => {
@@ -164,58 +172,46 @@ export default function App() {
               return idx !== -1 ? idx : fallback;
             };
             
-            colContenedor = findCol(['contenedor', 'cntr', 'equipo'], [], lastColContenedor);
-            colLote = findCol(['lote', 'pallet', 'sscc'], ['código', 'codigo', 'id'], lastColLote);
-            colCantidad = findCol(['cantidad', 'cant'], [], lastColCantidad);
-            colCajas = findCol(['cajas', 'bultos', 'bx'], [], lastColCajas);
-            colKilos = findCol(['kilos', 'peso', 'kg', 'neto'], [], lastColKilos);
-            colDesc = findCol(['descripci', 'producto', 'item'], [], lastColDesc);
+            colContenedor = findCol(['contenedor', 'cntr', 'equipo'], [], -1);
+            colLote = findCol(['lote', 'pallet', 'sscc', 'nro. bulto'], ['código', 'codigo', 'id'], 0);
+            colCantidad = findCol(['cantidad', 'cant', 'unidades'], [], 1);
+            colCajas = findCol(['cajas', 'bultos', 'bx'], [], 2);
+            colKilos = findCol(['kilos', 'peso', 'kg', 'neto'], [], 3);
+            colDesc = findCol(['descripci', 'producto', 'item', 'descripcion'], [], 4);
             
             lastColLote = colLote;
-            lastColContenedor = colContenedor;
-            lastColCantidad = colCantidad;
-            lastColCajas = colCajas;
-            lastColKilos = colKilos;
-            lastColDesc = colDesc;
+            if (colContenedor !== -1) lastColContenedor = colContenedor;
             break;
           }
         }
 
         const startRow = headerRowIdx !== -1 ? headerRowIdx + 1 : 0;
-        let currentContainerId = '';
         
         for (let i = startRow; i < json.length; i++) {
-          const row = json[i] as any[];
+          const row = json[i];
           if (!row || row.length === 0) continue;
           
-          let containerId = String(row[colContenedor] || '').trim();
-          if (containerId && !containerId.toLowerCase().includes('total')) {
-            currentContainerId = containerId;
-          } else if (!containerId) {
-            containerId = currentContainerId;
+          const rowStr = row.map(c => String(c || '').toLowerCase());
+          const isTotal = rowStr.some(c => c === 'total' || c === 'subtotal' || c === 'resumen' || c.startsWith('total '));
+          if (isTotal) continue;
+
+          if (colContenedor !== -1 && row[colContenedor]) {
+            currentContainerId = String(row[colContenedor]).trim().toUpperCase();
           }
           
           const palletId = String(row[colLote] || '').trim();
           const description = String(row[colDesc] || '').trim();
           const quantity = parseNumber(row[colCantidad]);
           
-          if (!palletId && !description && !quantity) continue;
-          
-          // Precise detection of total rows to avoid including them as pallets
-          const isTotalRow = (s: string) => {
-            const n = s.toLowerCase().trim();
-            return n === 'total' || n.startsWith('total ') || n.startsWith('total:') || n.includes('total general');
-          };
-          
-          if (isTotalRow(containerId) || (palletId && isTotalRow(palletId) && !description)) continue;
+          if (!palletId || palletId.toLowerCase() === 'total') continue;
           
           pallets.push({
-            containerId,
+            containerId: currentContainerId || 'SIN CONTENEDOR',
             palletId,
             quantity,
             boxes: parseNumber(row[colCajas]),
             weight: parseNumber(row[colKilos]),
-            description,
+            description: description || 'SIN DESCRIPCIÓN',
             rawRow: row.map(c => String(c || '')).join(' '),
           });
         }
@@ -346,8 +342,8 @@ export default function App() {
         });
       }
       
-      const matches = text.match(/\b\d{6,7}\b/g) || [];
-      const extractedIds = Array.from(new Set(matches)).filter(id => !/^0+$/.test(id));
+      const matches = text.match(/\b[A-Z0-9]{5,15}\b/gi) || [];
+      const extractedIds = Array.from(new Set(matches)).filter(id => !/^0+$/.test(id) && !/^[A-Z]+$/.test(id));
       
       if (extractedIds.length > 0) {
         setSearchInput(prev => prev + (prev ? ' ' : '') + extractedIds.join(' '));
@@ -863,41 +859,41 @@ export default function App() {
                       const contTotalCant = containerPallets.reduce((sum, p) => sum + p.quantity, 0);
                       
                       return (
-                        <div key={containerId} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden break-inside-avoid">
-                          <div className="px-8 py-6 flex justify-between items-center bg-white">
+                        <div key={containerId} className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden break-inside-avoid transition-all hover:shadow-xl">
+                          <div className="px-8 py-6 flex justify-between items-center bg-indigo-600 text-white">
                             <div className="flex items-center gap-5">
-                              <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">
+                              <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center shadow-inner">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-9h-5V5h-7"/><path d="M15 17h2"/><circle cx="8.5" cy="17.5" r="1.5"/><circle cx="18.5" cy="17.5" r="1.5"/></svg>
                               </div>
                               <div>
-                                <h3 className="text-xl font-bold text-gray-900 tracking-tight">
+                                <h3 className="text-xl font-bold tracking-tight">
                                   {containerId}
                                 </h3>
-                                <p className="text-sm text-gray-400 font-medium">Contenedor</p>
+                                <p className="text-[10px] text-indigo-100 font-bold uppercase tracking-widest">Contenedor</p>
                               </div>
                             </div>
                             <div className="flex items-center gap-10 text-right">
                               <div>
-                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">Pallets</p>
-                                <p className="text-xl font-black text-gray-900">
+                                <p className="text-[10px] text-indigo-200 font-bold uppercase tracking-widest mb-1">PALLETS</p>
+                                <p className="text-xl font-black">
                                   {containerPallets.length}
                                 </p>
                               </div>
                               <div>
-                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">Peso Total</p>
-                                <p className="text-xl font-black text-gray-900">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})} kg</p>
+                                <p className="text-[10px] text-indigo-200 font-bold uppercase tracking-widest mb-1">PESO TOTAL</p>
+                                <p className="text-xl font-black">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})} kg</p>
                               </div>
                             </div>
                           </div>
                           <div className="overflow-x-auto">
                             <table className="w-full text-left text-sm">
-                              <thead className="text-gray-400 border-b border-gray-50 bg-white">
+                              <thead className="text-gray-400 border-b border-gray-100 bg-gray-50/50">
                                 <tr>
-                                  <th className="px-8 py-4 font-medium">Pallet ID</th>
-                                  <th className="px-8 py-4 font-medium">Descripción</th>
-                                  <th className="px-8 py-4 font-medium text-right">Bultos</th>
-                                  <th className="px-8 py-4 font-medium text-right">Cant.</th>
-                                  <th className="px-8 py-4 font-medium text-right">Peso</th>
+                                  <th className="px-8 py-4 font-bold text-[10px] uppercase tracking-widest">PALLET ID</th>
+                                  <th className="px-8 py-4 font-bold text-[10px] uppercase tracking-widest">DESCRIPCIÓN</th>
+                                  <th className="px-8 py-4 font-bold text-[10px] uppercase tracking-widest text-right">CAJAS</th>
+                                  <th className="px-8 py-4 font-bold text-[10px] uppercase tracking-widest text-right">CANT.</th>
+                                  <th className="px-8 py-4 font-bold text-[10px] uppercase tracking-widest text-right">PESO</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-gray-50">
@@ -908,25 +904,25 @@ export default function App() {
                                     (p.rawRow ? normalize(p.rawRow).includes(id) : false)
                                   );
                                   return (
-                                    <tr key={`${p.palletId}-${idx}`} className={`${isSearched ? 'bg-[#fffbeb]' : 'bg-white'} relative transition-all`}>
+                                    <tr key={`${p.palletId}-${idx}`} className={`${isSearched ? 'bg-amber-50/50' : 'bg-white'} relative transition-all hover:bg-gray-50/30`}>
                                       {isSearched && (
                                         <td className="absolute left-0 top-0 bottom-0 w-1 bg-indigo-600"></td>
                                       )}
-                                      <td className={`px-8 py-4 font-medium text-indigo-600`}>{p.palletId}</td>
-                                      <td className={`px-8 py-4 max-w-lg truncate ${isSearched ? 'text-gray-700' : 'text-gray-400'}`} title={p.description}>{p.description}</td>
-                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-700' : 'text-gray-400'}`}>{p.boxes}</td>
-                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-700' : 'text-gray-400'}`}>{p.quantity}</td>
-                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-700' : 'text-gray-400'}`}>{p.weight}</td>
+                                      <td className={`px-8 py-4 font-bold text-indigo-600 font-mono`}>{p.palletId}</td>
+                                      <td className={`px-8 py-4 max-w-lg truncate ${isSearched ? 'text-gray-900 font-medium' : 'text-gray-400 opacity-60'}`} title={p.description}>{p.description}</td>
+                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-900 font-bold' : 'text-gray-400 opacity-60'}`}>{p.boxes}</td>
+                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-900 font-bold' : 'text-gray-400 opacity-60'}`}>{p.quantity}</td>
+                                      <td className={`px-8 py-4 text-right ${isSearched ? 'text-gray-900 font-bold' : 'text-gray-400 opacity-60'}`}>{p.weight}</td>
                                     </tr>
                                   );
                                 })}
                               </tbody>
-                              <tfoot className="bg-white font-bold text-gray-900 border-t border-gray-50">
+                              <tfoot className="bg-indigo-50/50 font-bold text-indigo-900 border-t border-indigo-100">
                                 <tr>
-                                  <td colSpan={2} className="px-8 py-4 text-right text-sm font-bold text-gray-600">Total Contenedor</td>
-                                  <td className="px-8 py-4 text-right">{contTotalBultos}</td>
-                                  <td className="px-8 py-4 text-right">{contTotalCant}</td>
-                                  <td className="px-8 py-4 text-right">{contTotalKilos.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</td>
+                                  <td colSpan={2} className="px-8 py-5 text-right text-[10px] font-black uppercase tracking-widest text-indigo-400">Total Contenedor</td>
+                                  <td className="px-8 py-5 text-right font-black">{contTotalBultos}</td>
+                                  <td className="px-8 py-5 text-right font-black">{contTotalCant}</td>
+                                  <td className="px-8 py-5 text-right font-black">{contTotalKilos.toLocaleString()} kg</td>
                                 </tr>
                               </tfoot>
                             </table>
