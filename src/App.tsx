@@ -265,33 +265,64 @@ export default function App() {
     if (!file) return;
     
     try {
-      let text = '';
+      let extractedIds: string[] = [];
+      
       if (file.name.toLowerCase().endsWith('.pdf')) {
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const textParts: string[] = [];
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
-          text += textContent.items.map((item: any) => item.str).join(' ') + ' ';
+          const pageText = textContent.items
+            .map((item: any) => (item && typeof item.str === 'string' ? item.str : ''))
+            .filter((str: string) => str.length > 0);
+          textParts.push(...pageText);
+        }
+        const fullText = textParts.join(' ');
+        const regex = /(?:^|[^\d])(\d{6,7})(?=[^\d]|$)/g;
+        let match;
+        while ((match = regex.exec(fullText)) !== null) {
+          extractedIds.push(match[1]);
         }
       } else {
         const arrayBuffer = await file.arrayBuffer();
         const workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' });
-        workbook.SheetNames.forEach(sheetName => {
-          const worksheet = workbook.Sheets[sheetName];
-          const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-          json.forEach((row: any) => {
-            text += row.join(' ') + ' ';
-          });
-        });
+        const firstSheet = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheet];
+        const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        extractedIds = json.flat()
+          .map((item: any) => String(item).trim())
+          .filter((item: string) => /^\d{6,7}$/.test(item));
       }
       
-      const matches = text.match(/\b\d{6,7}\b/g) || [];
-      const extractedIds = Array.from(new Set(matches)).filter(id => !/^0+$/.test(id));
+      extractedIds = Array.from(new Set(extractedIds)).filter(id => !/^0+$/.test(id));
       
       if (extractedIds.length > 0) {
-        setSearchInput(prev => prev + (prev ? ' ' : '') + extractedIds.join(' '));
-        showToast(`Se extrajeron ${extractedIds.length} IDs del archivo`);
+        const normalize = (id: string) => id.replace(/^0+/, '').trim();
+        const notFound: string[] = [];
+        const idsToAdd: string[] = [];
+        
+        extractedIds.forEach(id => {
+          const normId = normalize(id);
+          const matchedPallet = session.masterData.find(p => normalize(p.palletId) === normId);
+          if (matchedPallet) {
+            idsToAdd.push(matchedPallet.palletId);
+          } else {
+            notFound.push(id);
+            idsToAdd.push(id);
+          }
+        });
+        
+        if (notFound.length > 0) {
+          showAlert(`Los siguientes IDs extraídos no existen en la planilla maestra:\n${notFound.join(', ')}`);
+        }
+        
+        setSession(prev => {
+          const uniqueIds = Array.from(new Set([...prev.searchIds, ...idsToAdd]));
+          return { ...prev, searchIds: uniqueIds };
+        });
+        showToast(`Se agregaron ${extractedIds.length} IDs del archivo`);
       } else {
         showAlert('No se encontraron números de 6 o 7 dígitos en el archivo.');
       }
